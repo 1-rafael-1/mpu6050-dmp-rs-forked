@@ -78,12 +78,12 @@ pub enum MagRegister {
     /// Status 1 register
     Status1 = 0x02,
     /// Measurement data registers
-    MeasurementX_L = 0x03,
-    MeasurementX_H = 0x04,
-    MeasurementY_L = 0x05,
-    MeasurementY_H = 0x06,
-    MeasurementZ_L = 0x07,
-    MeasurementZ_H = 0x08,
+    MeasurementXL = 0x03,
+    MeasurementXH = 0x04,
+    MeasurementYL = 0x05,
+    MeasurementYH = 0x06,
+    MeasurementZL = 0x07,
+    MeasurementZH = 0x08,
     /// Status 2 register
     Status2 = 0x09,
     /// Control 1 register

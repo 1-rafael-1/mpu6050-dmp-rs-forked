@@ -49,7 +49,7 @@ where
         }
 
         // Read magnetometer data
-        self.read_mag_registers(MagRegister::MeasurementX_L, &mut data)?;
+        self.read_mag_registers(MagRegister::MeasurementXL, &mut data)?;
 
         // Check for overflow
         let status2 = self.read_mag_register(MagRegister::Status2)?;

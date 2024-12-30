@@ -19,6 +19,8 @@ mod firmware_loader;
 mod firmware_loader_async;
 pub mod gravity;
 pub mod gyro;
+#[cfg(feature = "mpu9265")]
+pub mod mag;
 #[cfg(feature = "async")]
 pub mod motion;
 pub mod quaternion;
@@ -26,5 +28,14 @@ pub mod registers;
 pub mod sensor;
 #[cfg(feature = "async")]
 pub mod sensor_async;
+#[cfg(feature = "mpu9265")]
+pub mod sensor_mpu9265;
 pub mod temperature;
 pub mod yaw_pitch_roll;
+
+// Re-export commonly used types
+pub use accel::{Accel, AccelFullScale};
+pub use gyro::{Gyro, GyroFullScale};
+#[cfg(feature = "mpu9265")]
+pub use mag::{Mag, MagBitMode, MagMode};
+pub use sensor::Mpu6050;

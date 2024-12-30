@@ -40,6 +40,8 @@ where
     WriteReadError(I::Error),
     /// Device did not respond as an MPU-6050
     WrongDevice,
+    /// Calibration arithmetic overflow occurred
+    CalibrationOverflow,
 }
 
 impl<I> Debug for Error<I>
@@ -51,6 +53,7 @@ where
             Self::WriteReadError(e) => f.debug_tuple("WriteReadError").field(e).finish(),
             Self::WriteError(e) => f.debug_tuple("WriteError").field(e).finish(),
             Self::WrongDevice => f.write_str("WrongDevice"),
+            Self::CalibrationOverflow => f.write_str("CalibrationOverflow"),
         }
     }
 }

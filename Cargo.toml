@@ -17,6 +17,7 @@ readme = "README.md"
 default = []
 defmt-03 = ["dep:defmt"]
 async = ["dep:embedded-hal-async"]
+mpu9265 = []
 
 [dependencies]
 embedded-hal = { version = "1" }

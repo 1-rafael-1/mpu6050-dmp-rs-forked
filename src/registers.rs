@@ -141,4 +141,81 @@ pub enum Register {
     MotionDetectCtrl = 0x69,
     /// Motion Detection Status
     MotionDetectStatus = 0x61,
+
+    // MPU9265 I2C Master Registers (only available when mpu9265 feature is enabled)
+    #[cfg(feature = "mpu9265")]
+    /// I2C Master Control
+    I2CMasterCtrl = 0x24,
+    #[cfg(feature = "mpu9265")]
+    /// I2C Slave 0 Address
+    I2CSlave0Addr = 0x25,
+    #[cfg(feature = "mpu9265")]
+    /// I2C Slave 0 Register
+    I2CSlave0Reg = 0x26,
+    #[cfg(feature = "mpu9265")]
+    /// I2C Slave 0 Control
+    I2CSlave0Ctrl = 0x27,
+    #[cfg(feature = "mpu9265")]
+    /// I2C Slave 0 Data Out
+    I2CSlave0DO = 0x63,
+    #[cfg(feature = "mpu9265")]
+    /// I2C Slave 0 Data In
+    I2CSlave0DI = 0x49,
+    #[cfg(feature = "mpu9265")]
+    /// I2C Master Status
+    I2CMasterStatus = 0x36,
+    #[cfg(feature = "mpu9265")]
+    /// I2C Master Delay Control
+    I2CMasterDelayCtrl = 0x67,
+}
+
+/// I2C Master Control register bits
+#[cfg(feature = "mpu9265")]
+pub mod i2c_master_control {
+    /// I2C Master Clock Speed
+    pub const MULT_MST_EN: u8 = 1 << 7;
+    /// Wait for External Sensor Data
+    pub const WAIT_FOR_ES: u8 = 1 << 6;
+    /// Slave 3 FIFO Enable
+    pub const SLV_3_FIFO_EN: u8 = 1 << 5;
+    /// I2C Master Reset
+    pub const I2C_MST_RST: u8 = 1 << 1;
+    /// I2C Master Enable
+    pub const I2C_MST_EN: u8 = 1 << 0;
+}
+
+/// I2C Slave Control register bits
+#[cfg(feature = "mpu9265")]
+pub mod i2c_slave_control {
+    /// Enable Data Transfer
+    pub const EN: u8 = 1 << 7;
+    /// Byte Swap
+    pub const BYTE_SW: u8 = 1 << 6;
+    /// Register Address Auto Increment
+    pub const REG_DIS: u8 = 1 << 5;
+    /// Enable Grouping
+    pub const GRP: u8 = 1 << 4;
+    /// Length of Transfer (4 bits)
+    pub const LEN_MASK: u8 = 0x0F;
+}
+
+/// I2C Master Status register bits
+#[cfg(feature = "mpu9265")]
+pub mod i2c_master_status {
+    /// Pass-Through Status
+    pub const PASS_THROUGH: u8 = 1 << 7;
+    /// Slave 4 NACK Status
+    pub const I2C_SLV4_DONE: u8 = 1 << 6;
+    /// Lost Arbitration
+    pub const I2C_LOST_ARB: u8 = 1 << 5;
+    /// Slave 4 NACK Status
+    pub const I2C_SLV4_NACK: u8 = 1 << 4;
+    /// Slave 3 NACK Status
+    pub const I2C_SLV3_NACK: u8 = 1 << 3;
+    /// Slave 2 NACK Status
+    pub const I2C_SLV2_NACK: u8 = 1 << 2;
+    /// Slave 1 NACK Status
+    pub const I2C_SLV1_NACK: u8 = 1 << 1;
+    /// Slave 0 NACK Status
+    pub const I2C_SLV0_NACK: u8 = 1 << 0;
 }

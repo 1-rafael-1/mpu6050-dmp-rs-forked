@@ -32,18 +32,37 @@ where
 {
     let mut accumulator = MeanAccumulator::new(accel_scale, gravity);
 
-    for _ in 0..WARMUP_ITERATIONS {
+    #[cfg(feature = "defmt-03")]
+    defmt::info!("Starting {} warmup iterations", WARMUP_ITERATIONS);
+
+    for i in 0..WARMUP_ITERATIONS {
         _ = mpu.accel().await?;
         _ = mpu.gyro().await?;
         delay.delay_ms(DELAY_MS).await;
+
+        #[cfg(feature = "defmt-03")]
+        if i % 10 == 0 {
+            defmt::info!("Warmup progress: {}/{}", i, WARMUP_ITERATIONS);
+        }
     }
 
-    for _ in 0..ITERATIONS {
+    #[cfg(feature = "defmt-03")]
+    defmt::info!("Starting {} measurement iterations", ITERATIONS);
+
+    for i in 0..ITERATIONS {
         let accel = mpu.accel().await?;
         let gyro = mpu.gyro().await?;
         accumulator.add(&accel, &gyro);
         delay.delay_ms(DELAY_MS).await;
+
+        #[cfg(feature = "defmt-03")]
+        if i % 50 == 0 {
+            defmt::info!("Measurement progress: {}/{}", i, ITERATIONS);
+        }
     }
+
+    #[cfg(feature = "defmt-03")]
+    defmt::info!("Computing means from collected samples");
 
     Ok(accumulator.means())
 }
@@ -64,26 +83,61 @@ where
     mpu.set_gyro_full_scale(parameters.gyro_scale).await?;
     let mut accel_offset = mpu.get_accel_calibration().await?;
     let mut gyro_offset = mpu.get_gyro_calibration().await?;
+
+    #[cfg(feature = "defmt-03")]
+    defmt::info!(
+        "Starting calibration loop with offsets - Accel: ({}, {}, {}), Gyro: ({}, {}, {})",
+        accel_offset.x(),
+        accel_offset.y(),
+        accel_offset.z(),
+        gyro_offset.x(),
+        gyro_offset.y(),
+        gyro_offset.z()
+    );
+
     let (accel_mean, gyro_mean) =
         collect_mean_values(mpu, delay, parameters.accel_scale, parameters.gravity).await?;
 
+    #[cfg(feature = "defmt-03")]
+    defmt::info!(
+        "Mean values - Accel: ({}, {}, {}), Gyro: ({}, {}, {})",
+        accel_mean.x(),
+        accel_mean.y(),
+        accel_mean.z(),
+        gyro_mean.x(),
+        gyro_mean.y(),
+        gyro_mean.z()
+    );
+
     if parameters.accel_threshold.is_value_within(accel_mean.x()) {
         actions = actions.with_accel_x(false);
+        #[cfg(feature = "defmt-03")]
+        defmt::info!("Accel X within threshold");
     }
     if parameters.accel_threshold.is_value_within(accel_mean.y()) {
         actions = actions.with_accel_y(false);
+        #[cfg(feature = "defmt-03")]
+        defmt::info!("Accel Y within threshold");
     }
     if parameters.accel_threshold.is_value_within(accel_mean.z()) {
         actions = actions.with_accel_z(false);
+        #[cfg(feature = "defmt-03")]
+        defmt::info!("Accel Z within threshold");
     }
     if parameters.gyro_threshold.is_value_within(gyro_mean.x()) {
         actions = actions.with_gyro_x(false);
+        #[cfg(feature = "defmt-03")]
+        defmt::info!("Gyro X within threshold");
     }
     if parameters.gyro_threshold.is_value_within(gyro_mean.y()) {
         actions = actions.with_gyro_y(false);
+        #[cfg(feature = "defmt-03")]
+        defmt::info!("Gyro Y within threshold");
     }
     if parameters.gyro_threshold.is_value_within(gyro_mean.z()) {
         actions = actions.with_gyro_z(false);
+        #[cfg(feature = "defmt-03")]
+        defmt::info!("Gyro Z within threshold");
     }
 
     if actions.accel_x() {
@@ -118,6 +172,16 @@ where
     }
 
     if !actions.is_empty() {
+        #[cfg(feature = "defmt-03")]
+        defmt::info!(
+            "Setting new offsets - Accel: ({}, {}, {}), Gyro: ({}, {}, {})",
+            accel_offset.x(),
+            accel_offset.y(),
+            accel_offset.z(),
+            gyro_offset.x(),
+            gyro_offset.y(),
+            gyro_offset.z()
+        );
         mpu.set_accel_calibration(&accel_offset).await?;
         mpu.set_gyro_calibration(&gyro_offset).await?;
     }

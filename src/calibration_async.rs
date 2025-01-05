@@ -88,7 +88,7 @@ where
     for i in 0..WARMUP_ITERATIONS {
         _ = mpu.accel().await?;
         _ = mpu.gyro().await?;
-        _ = mpu.mag().await;
+        _ = mpu.mag(delay).await;
         delay.delay_ms(DELAY_MS).await;
 
         #[cfg(feature = "defmt-03")]
@@ -103,7 +103,7 @@ where
     for i in 0..ITERATIONS {
         let accel = mpu.accel().await?;
         let gyro = mpu.gyro().await?;
-        let mag = mpu.mag().await.ok();
+        let mag = mpu.mag(delay).await.ok();
         accumulator.add(&accel, &gyro, mag.as_ref());
         delay.delay_ms(DELAY_MS).await;
 

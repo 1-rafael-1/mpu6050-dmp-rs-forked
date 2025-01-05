@@ -29,7 +29,7 @@ where
     i2c: I,
     address: u8,
     #[cfg(feature = "mpu9265")]
-    pub mag_calibration: Option<crate::sensor_mpu9265::MagCalibration>,
+    pub(crate) mag_calibration: Option<crate::sensor_mpu9265::MagCalibration>,
 }
 
 impl<I> Mpu6050<I>

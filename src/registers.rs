@@ -109,6 +109,10 @@ pub enum Register {
     /// Indicates which interrupts have been triggered
     IntStatus = 0x3A,
 
+    /// Interrupt Pin/Bypass Enable Configuration register (0x37)
+    /// Controls interrupt pin and bypass enable configuration
+    IntPinCfg = 0x37,
+
     // FIFO Registers
     /// FIFO Enable register (0x23)
     /// Controls which sensor data goes to FIFO

@@ -48,6 +48,9 @@ where
     /// Magnetometer not responding
     #[cfg(feature = "mpu9265")]
     MagNotFound,
+    /// Magnetometer timeout occurred
+    #[cfg(feature = "mpu9265")]
+    MagTimeout,
 }
 
 impl<I> Debug for Error<I>
@@ -64,6 +67,8 @@ where
             Self::MagOverflow => f.write_str("MagOverflow"),
             #[cfg(feature = "mpu9265")]
             Self::MagNotFound => f.write_str("MagNotFound"),
+            #[cfg(feature = "mpu9265")]
+            Self::MagTimeout => f.write_str("MagTimeout"),
         }
     }
 }

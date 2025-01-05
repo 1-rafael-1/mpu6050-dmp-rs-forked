@@ -32,7 +32,8 @@ use crate::{
     motion::{MotionConfig, MotionDetected},
     registers::Register,
 };
-
+#[cfg(feature = "defmt-03")]
+use defmt::info;
 use embedded_hal_async::{delay, i2c::I2c};
 
 /// InvenSense MPU-6050 Driver
@@ -528,31 +529,105 @@ where
 
     #[cfg(feature = "mpu9265")]
     /// Initialize the AK8963 magnetometer
-    pub async fn init_mag(&mut self) -> Result<(), Error<I>> {
+    pub async fn init_mag(&mut self, delay: &mut impl delay::DelayNs) -> Result<(), Error<I>> {
+        #[cfg(feature = "defmt-03")]
+        info!("Initializing AK8963 magnetometer");
+
+        // Reset MPU9250
+        self.write_register(Register::PwrMgmt1, 0x80).await?;
+        delay.delay_ms(100).await;
+
+        // Wake up device and select clock source to gyro
+        self.write_register(Register::PwrMgmt1, 0x01).await?;
+        delay.delay_ms(100).await;
+
+        // Disable I2C master mode and FIFO
+        self.write_register(Register::UserCtrl, 0x00).await?;
+        delay.delay_ms(10).await;
+
+        // Configure I2C master clock to 400kHz
+        self.write_register(Register::I2CMasterCtrl, 0x0D).await?;
+        delay.delay_ms(10).await;
+
         // Enable I2C master mode
-        let mut value = self.read_register(Register::UserCtrl).await?;
-        value |= 1 << 5;
-        self.write_register(Register::UserCtrl, value).await?;
+        self.write_register(Register::UserCtrl, 0x20).await?;
+        delay.delay_ms(10).await;
 
-        // Configure I2C master
-        self.write_register(Register::I2CMasterCtrl, 0x0D).await?; // 400kHz I2C clock
+        // Configure slave 0 for writing to AK8963
+        self.write_register(Register::I2CSlv0Addr, MAG_ADDR).await?;
+        delay.delay_ms(10).await;
 
-        // Read sensitivity adjustment values and store them
+        // Reset AK8963
+        self.write_register(Register::I2CSlv0Reg, MagRegister::Control2 as u8)
+            .await?;
+        self.write_register(Register::I2CSlv0Do, 0x01).await?;
+        self.write_register(Register::I2CSlv0Ctrl, 0x81).await?;
+        delay.delay_ms(50).await;
+
+        // Configure slave 0 for reading WHO_AM_I
+        self.write_register(Register::I2CSlv0Addr, MAG_ADDR | 0x80)
+            .await?;
+        self.write_register(Register::I2CSlv0Reg, MagRegister::WhoAmI as u8)
+            .await?;
+        self.write_register(Register::I2CSlv0Ctrl, 0x81).await?;
+        delay.delay_ms(50).await;
+
+        #[cfg(feature = "defmt-03")]
+        info!("Check WHO_AM_I register");
+        // Check WHO_AM_I register
+        let who_am_i = self.read_mag_register(MagRegister::WhoAmI).await?;
+        if who_am_i != 0x48 {
+            return Err(Error::MagNotFound);
+        }
+        #[cfg(feature = "defmt-03")]
+        info!("WHO_AM_I register is correct");
+
+        #[cfg(feature = "defmt-03")]
+        info!("Enter Fuse ROM access mode");
+        // Enter Fuse ROM access mode
+        self.write_mag_register(MagRegister::Control1, MagMode::FuseROM as u8)
+            .await?;
+        delay.delay_ms(100).await;
+        #[cfg(feature = "defmt-03")]
+        info!("Fuse ROM access mode complete");
+
+        #[cfg(feature = "defmt-03")]
+        info!("Read sensitivity adjustment values");
+        // Read sensitivity adjustment values
         let (asa_x, asa_y, asa_z) = self.read_mag_sensitivity().await?;
         let sx = ((asa_x as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
         let sy = ((asa_y as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
         let sz = ((asa_z as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+        #[cfg(feature = "defmt-03")]
+        info!("Sensitivity adjustment values: ({}, {}, {})", sx, sy, sz);
 
+        #[cfg(feature = "defmt-03")]
+        info!("Exit Fuse ROM access mode");
+        // Exit Fuse ROM access mode
+        self.write_mag_register(MagRegister::Control1, 0).await?;
+        delay.delay_ms(100).await;
+        #[cfg(feature = "defmt-03")]
+        info!("Done Entering Fuse ROM access mode");
+
+        #[cfg(feature = "defmt-03")]
+        info!("Configure magnetometer for continuous measurement mode with 16-bit output");
         // Configure magnetometer for continuous measurement mode with 16-bit output
         let config = MagMode::Continuous2 as u8 | (MagBitMode::Bit16 as u8) << 4;
         self.write_mag_register(MagRegister::Control1, config)
             .await?;
+        delay.delay_ms(100).await;
+        #[cfg(feature = "defmt-03")]
+        info!("Done Configuring magnetometer for continuous measurement mode with 16-bit output");
 
+        #[cfg(feature = "defmt-03")]
+        info!("Initializing calibration with sensitivity adjustments but no offsets");
         // Initialize calibration with sensitivity adjustments but no offsets
         self.mag_calibration = Some(crate::sensor_mpu9265::MagCalibration {
             offsets: (0, 0, 0),
             sensitivity: (sx, sy, sz),
         });
+        #[cfg(feature = "defmt-03")]
+        info!("Calibration initialized with sensitivity adjustments but no offsets");
 
         Ok(())
     }
@@ -574,15 +649,22 @@ where
 
     #[cfg(feature = "mpu9265")]
     /// Read magnetometer measurements with calibration applied if available
-    pub async fn mag(&mut self) -> Result<Mag, Error<I>> {
+    pub async fn mag(&mut self, delay: &mut impl delay::DelayNs) -> Result<Mag, Error<I>> {
         let mut data = [0; 6];
+        let mut retries = 0;
+        const MAX_RETRIES: u8 = 10;
 
-        // Wait for data ready
+        // Wait for data ready with timeout
         loop {
             let status = self.read_mag_register(MagRegister::Status1).await?;
             if status & 0x01 != 0 {
                 break;
             }
+            retries += 1;
+            if retries >= MAX_RETRIES {
+                return Err(Error::MagTimeout);
+            }
+            delay.delay_ms(1).await;
         }
 
         // Read magnetometer data
@@ -612,78 +694,36 @@ where
     }
 
     #[cfg(feature = "mpu9265")]
-    /// Read from magnetometer register
+    /// Read from magnetometer register in bypass mode
     async fn read_mag_register(&mut self, reg: MagRegister) -> Result<u8, Error<I>> {
-        // Set slave 0 to read from magnetometer register
-        self.write_register(Register::I2CSlave0Addr, MAG_ADDR | 0x80)
-            .await?;
-        self.write_register(Register::I2CSlave0Reg, reg as u8)
-            .await?;
-        self.write_register(Register::I2CSlave0Ctrl, 0x81).await?; // Enable read, 1 byte
-
-        // Wait for transfer to complete
-        loop {
-            let status = self.read_register(Register::I2CMasterStatus).await?;
-            if status & 0x01 == 0 {
-                break;
-            }
-        }
-
-        // Read the data
-        self.read_register(Register::I2CSlave0DI).await
+        let mut buffer = [0; 1];
+        self.i2c
+            .write_read(MAG_ADDR, &[reg as u8], &mut buffer)
+            .await
+            .map_err(Error::WriteReadError)?;
+        Ok(buffer[0])
     }
 
     #[cfg(feature = "mpu9265")]
-    /// Write to magnetometer register
+    /// Write to magnetometer register in bypass mode
     async fn write_mag_register(&mut self, reg: MagRegister, value: u8) -> Result<(), Error<I>> {
-        // Set slave 0 to write to magnetometer register
-        self.write_register(Register::I2CSlave0Addr, MAG_ADDR)
-            .await?;
-        self.write_register(Register::I2CSlave0Reg, reg as u8)
-            .await?;
-        self.write_register(Register::I2CSlave0DO, value).await?;
-        self.write_register(Register::I2CSlave0Ctrl, 0x81).await?; // Enable write, 1 byte
-
-        // Wait for transfer to complete
-        loop {
-            let status = self.read_register(Register::I2CMasterStatus).await?;
-            if status & 0x01 == 0 {
-                break;
-            }
-        }
-
-        Ok(())
+        self.i2c
+            .write(MAG_ADDR, &[reg as u8, value])
+            .await
+            .map_err(Error::WriteError)
     }
 
     #[cfg(feature = "mpu9265")]
-    /// Read multiple magnetometer registers
+    /// Read multiple magnetometer registers in bypass mode
     async fn read_mag_registers(
         &mut self,
         reg: MagRegister,
         data: &mut [u8],
     ) -> Result<(), Error<I>> {
-        // Set slave 0 to read from magnetometer registers
-        self.write_register(Register::I2CSlave0Addr, MAG_ADDR | 0x80)
-            .await?;
-        self.write_register(Register::I2CSlave0Reg, reg as u8)
-            .await?;
-        self.write_register(Register::I2CSlave0Ctrl, 0x80 | data.len() as u8)
-            .await?;
-
-        // Wait for transfer to complete
-        loop {
-            let status = self.read_register(Register::I2CMasterStatus).await?;
-            if status & 0x01 == 0 {
-                break;
-            }
-        }
-
-        // Read the data
-        for byte in data.iter_mut() {
-            *byte = self.read_register(Register::I2CSlave0DI).await?;
-        }
-
-        Ok(())
+        self.i2c
+            .write_read(MAG_ADDR, &[reg as u8], data)
+            .await
+            .map_err(Error::WriteReadError)
     }
 
     /// Configure motion detection parameters.

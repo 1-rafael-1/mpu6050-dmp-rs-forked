@@ -4,6 +4,7 @@
 //! when the mpu9265 feature is enabled.
 
 use crate::{
+    calibration::{CalibrationParameters, ITERATIONS, WARMUP_ITERATIONS},
     error::Error,
     mag::{Mag, MagBitMode, MagMode, MagRegister, MAG_ADDR},
     registers::Register,
@@ -11,10 +12,31 @@ use crate::{
 };
 use embedded_hal::i2c::I2c;
 
+#[derive(Debug)]
+#[cfg(feature = "mpu9265")]
+pub(crate) struct MagCalibration {
+    pub offsets: (i16, i16, i16),
+    pub sensitivity: (f32, f32, f32),
+}
+
+#[cfg(feature = "mpu9265")]
 impl<I> Mpu6050<I>
 where
     I: I2c,
 {
+    /// Read magnetometer sensitivity adjustment values from Fuse ROM
+    fn read_mag_sensitivity(&mut self) -> Result<(u8, u8, u8), Error<I>> {
+        // Enter Fuse ROM access mode
+        self.write_mag_register(MagRegister::Control1, MagMode::FuseROM as u8)?;
+
+        // Read sensitivity adjustment values
+        let asa_x = self.read_mag_register(MagRegister::ASAX)?;
+        let asa_y = self.read_mag_register(MagRegister::ASAY)?;
+        let asa_z = self.read_mag_register(MagRegister::ASAZ)?;
+
+        Ok((asa_x, asa_y, asa_z))
+    }
+
     /// Initialize the AK8963 magnetometer
     pub fn init_mag(&mut self) -> Result<(), Error<I>> {
         // Enable I2C master mode
@@ -25,18 +47,97 @@ where
         // Configure I2C master
         self.write_register(Register::I2CMasterCtrl, 0x0D)?; // 400kHz I2C clock
 
-        // Configure magnetometer for continuous measurement mode
-        self.write_mag_register(MagRegister::Control1, MagMode::Continuous2 as u8)?;
+        // Read sensitivity adjustment values and store them
+        let (asa_x, asa_y, asa_z) = self.read_mag_sensitivity()?;
+        let sx = ((asa_x as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+        let sy = ((asa_y as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+        let sz = ((asa_z as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
 
-        // Set 16-bit output
-        let mut value = self.read_mag_register(MagRegister::Control1)?;
-        value |= (MagBitMode::Bit16 as u8) << 4;
-        self.write_mag_register(MagRegister::Control1, value)?;
+        // Configure magnetometer for continuous measurement mode with 16-bit output
+        let config = MagMode::Continuous2 as u8 | (MagBitMode::Bit16 as u8) << 4;
+        self.write_mag_register(MagRegister::Control1, config)?;
+
+        // Initialize calibration with sensitivity adjustments but no offsets
+        self.mag_calibration = Some(MagCalibration {
+            offsets: (0, 0, 0),
+            sensitivity: (sx, sy, sz),
+        });
 
         Ok(())
     }
 
-    /// Read magnetometer measurements
+    /// Calibrate the magnetometer and store calibration data
+    pub fn calibrate_mag(&mut self, params: &CalibrationParameters) -> Result<(), Error<I>> {
+        let mut mx_offset = 0i16;
+        let mut my_offset = 0i16;
+        let mut mz_offset = 0i16;
+
+        // Get current sensitivity values or read new ones if not initialized
+        let (sx, sy, sz) = if let Some(cal) = &self.mag_calibration {
+            cal.sensitivity
+        } else {
+            let (asa_x, asa_y, asa_z) = self.read_mag_sensitivity()?;
+            let sx = ((asa_x as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+            let sy = ((asa_y as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+            let sz = ((asa_z as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+            (sx, sy, sz)
+        };
+
+        // Calibration loop
+        loop {
+            let mut mx_sum = 0i32;
+            let mut my_sum = 0i32;
+            let mut mz_sum = 0i32;
+            let mut count = 0;
+
+            // Discard initial readings
+            for _ in 0..WARMUP_ITERATIONS {
+                let _ = self.mag()?;
+            }
+
+            // Take multiple readings and accumulate
+            for _ in 0..ITERATIONS {
+                if let Ok(mag) = self.mag() {
+                    // Apply sensitivity adjustments and current offsets
+                    let mx = (mag.x() as f32 * sx) as i16 - mx_offset;
+                    let my = (mag.y() as f32 * sy) as i16 - my_offset;
+                    let mz = (mag.z() as f32 * sz) as i16 - mz_offset;
+
+                    mx_sum += mx as i32;
+                    my_sum += my as i32;
+                    mz_sum += mz as i32;
+                    count += 1;
+                }
+            }
+
+            // Calculate means
+            let mx_mean = (mx_sum / count) as i16;
+            let my_mean = (my_sum / count) as i16;
+            let mz_mean = (mz_sum / count) as i16;
+
+            // Check if calibration is complete
+            if params.mag_threshold.is_value_within(mx_mean)
+                && params.mag_threshold.is_value_within(my_mean)
+                && params.mag_threshold.is_value_within(mz_mean)
+            {
+                // Store final calibration values
+                self.mag_calibration = Some(MagCalibration {
+                    offsets: (mx_offset, my_offset, mz_offset),
+                    sensitivity: (sx, sy, sz),
+                });
+                break;
+            }
+
+            // Update offsets using PID-like controller
+            mx_offset = params.mag_threshold.next_offset(mx_mean, mx_offset);
+            my_offset = params.mag_threshold.next_offset(my_mean, my_offset);
+            mz_offset = params.mag_threshold.next_offset(mz_mean, mz_offset);
+        }
+
+        Ok(())
+    }
+
+    /// Read magnetometer measurements with calibration applied if available
     pub fn mag(&mut self) -> Result<Mag, Error<I>> {
         let mut data = [0; 6];
 
@@ -62,7 +163,15 @@ where
         let y = i16::from_le_bytes([data[2], data[3]]);
         let z = i16::from_le_bytes([data[4], data[5]]);
 
-        Ok(Mag::new(x, y, z))
+        // Apply calibration if available
+        if let Some(cal) = &self.mag_calibration {
+            let mx = (x as f32 * cal.sensitivity.0) as i16 - cal.offsets.0;
+            let my = (y as f32 * cal.sensitivity.1) as i16 - cal.offsets.1;
+            let mz = (z as f32 * cal.sensitivity.2) as i16 - cal.offsets.2;
+            Ok(Mag::new(mx, my, mz))
+        } else {
+            Ok(Mag::new(x, y, z))
+        }
     }
 
     /// Read from magnetometer register
@@ -119,7 +228,7 @@ where
         }
 
         // Read the data
-        for (i, byte) in data.iter_mut().enumerate() {
+        for (_i, byte) in data.iter_mut().enumerate() {
             *byte = self.read_register(Register::I2CSlave0DI)?;
         }
 

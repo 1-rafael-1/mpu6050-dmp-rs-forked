@@ -42,6 +42,12 @@ where
     WrongDevice,
     /// Calibration arithmetic overflow occurred
     CalibrationOverflow,
+    /// Magnetometer data overflow occurred (MPU-9265 only)
+    #[cfg(feature = "mpu9265")]
+    MagOverflow,
+    /// Magnetometer not responding
+    #[cfg(feature = "mpu9265")]
+    MagNotFound,
 }
 
 impl<I> Debug for Error<I>
@@ -54,6 +60,10 @@ where
             Self::WriteError(e) => f.debug_tuple("WriteError").field(e).finish(),
             Self::WrongDevice => f.write_str("WrongDevice"),
             Self::CalibrationOverflow => f.write_str("CalibrationOverflow"),
+            #[cfg(feature = "mpu9265")]
+            Self::MagOverflow => f.write_str("MagOverflow"),
+            #[cfg(feature = "mpu9265")]
+            Self::MagNotFound => f.write_str("MagNotFound"),
         }
     }
 }

@@ -28,6 +28,8 @@ where
 {
     i2c: I,
     address: u8,
+    #[cfg(feature = "mpu9265")]
+    pub mag_calibration: Option<crate::sensor_mpu9265::MagCalibration>,
 }
 
 impl<I> Mpu6050<I>
@@ -39,6 +41,8 @@ where
         let mut sensor = Self {
             i2c,
             address: address.into(),
+            #[cfg(feature = "mpu9265")]
+            mag_calibration: None,
         };
 
         if let Err(error) = sensor.disable_sleep() {
@@ -228,7 +232,7 @@ where
         &mut self,
         delay: &mut impl delay::DelayNs,
         parameters: &CalibrationParameters,
-    ) -> Result<(Accel, Gyro), Error<I>> {
+    ) -> Result<(Accel, Gyro, Option<crate::Mag>), Error<I>> {
         calibrate(self, delay, parameters)
     }
 
@@ -238,7 +242,7 @@ where
         delay: &mut impl delay::DelayNs,
         accel_scale: AccelFullScale,
         gravity: ReferenceGravity,
-    ) -> Result<(Accel, Gyro), Error<I>> {
+    ) -> Result<(Accel, Gyro, Option<crate::Mag>), Error<I>> {
         collect_mean_values(self, delay, accel_scale, gravity)
     }
 
@@ -296,7 +300,7 @@ where
         delay: &mut impl delay::DelayNs,
         parameters: &CalibrationParameters,
         actions: CalibrationActions,
-    ) -> Result<(CalibrationActions, Accel, Gyro), Error<I>> {
+    ) -> Result<(CalibrationActions, Accel, Gyro, Option<crate::Mag>), Error<I>> {
         calibration_loop(self, delay, parameters, actions)
     }
 

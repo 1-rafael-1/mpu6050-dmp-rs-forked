@@ -25,7 +25,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 // mpu6050-dmp
 use mpu6050_dmp::sensor_async::Mpu6050;
-use mpu6050_dmp::{address::Address, calibration::CalibrationParameters};
+use mpu6050_dmp::{address::Address, calibration::CalibrationParameters, mag};
 
 embassy_rp::bind_interrupts!(struct Irqs {
     I2C1_IRQ => InterruptHandler<embassy_rp::peripherals::I2C1>;
@@ -58,6 +58,11 @@ async fn main(_spawner: Spawner) {
     // info!("Initializing DMP Firmware");
     // sensor.initialize_dmp(&mut delay).await.unwrap();
     // info!("DMP Firmware Initialized");
+
+    // Initialize magnetometer
+    info!("Initializing magnetometer");
+    sensor.init_mag().await.unwrap();
+    info!("Magnetometer initialized");
 
     // Read raw accelerometer data (uncalibrated)
     // The accelerometer measures linear acceleration in three axes (X, Y, Z)
@@ -121,9 +126,10 @@ async fn main(_spawner: Spawner) {
     // - Gyroscope: returns rotational velocity in degrees/second
     // - Temperature: returns degrees Celsius
     loop {
-        let (accel, gyro, temp) = (
+        let (accel, gyro, mag, temp) = (
             sensor.accel().await.unwrap(),
             sensor.gyro().await.unwrap(),
+            sensor.mag().await.unwrap(),
             sensor.temperature().await.unwrap().celsius(),
         );
         info!("Sensor Readings:");
@@ -138,6 +144,12 @@ async fn main(_spawner: Spawner) {
             gyro.x() as i32,
             gyro.y() as i32,
             gyro.z() as i32
+        );
+        info!(
+            "  Magnetometer [μT]: x={}, y={}, z={}",
+            mag.x() as i32,
+            mag.y() as i32,
+            mag.z() as i32
         );
         info!("  Temperature: {}°C", temp);
         Timer::after_millis(1000).await;

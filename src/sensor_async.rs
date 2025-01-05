@@ -16,6 +16,8 @@
 //! asynchronous alternatives for all operations, making it suitable for
 //! embedded systems running async executors.
 
+#[cfg(feature = "mpu9265")]
+use crate::mag::{Mag, MagBitMode, MagMode, MagRegister, MAG_ADDR};
 use crate::temperature::Temperature;
 use crate::{
     accel::{Accel, AccelFullScale},
@@ -40,6 +42,8 @@ where
 {
     i2c: I,
     address: u8,
+    #[cfg(feature = "mpu9265")]
+    mag_calibration: Option<crate::sensor_mpu9265::MagCalibration>,
 }
 
 impl<I> Mpu6050<I>
@@ -51,6 +55,8 @@ where
         let mut sensor = Self {
             i2c,
             address: address.into(),
+            #[cfg(feature = "mpu9265")]
+            mag_calibration: None,
         };
 
         if let Err(error) = sensor.disable_sleep().await {
@@ -205,6 +211,7 @@ where
     ///
     /// Note: If the sensor is not properly oriented or moving during calibration,
     /// this function may never complete as it tries to achieve unreachable targets.
+    #[cfg(not(feature = "mpu9265"))]
     pub async fn calibrate(
         &mut self,
         delay: &mut impl delay::DelayNs,
@@ -213,13 +220,33 @@ where
         calibrate(self, delay, parameters).await
     }
 
+    #[cfg(feature = "mpu9265")]
+    pub async fn calibrate(
+        &mut self,
+        delay: &mut impl delay::DelayNs,
+        parameters: &CalibrationParameters,
+    ) -> Result<(Accel, Gyro, Option<Mag>), Error<I>> {
+        calibrate(self, delay, parameters).await
+    }
+
     /// A building block for performing calibration: collect several samples return their average
+    #[cfg(not(feature = "mpu9265"))]
     pub async fn collect_mean_values(
         &mut self,
         delay: &mut impl delay::DelayNs,
         accel_scale: AccelFullScale,
         gravity: ReferenceGravity,
     ) -> Result<(Accel, Gyro), Error<I>> {
+        collect_mean_values(self, delay, accel_scale, gravity).await
+    }
+
+    #[cfg(feature = "mpu9265")]
+    pub async fn collect_mean_values(
+        &mut self,
+        delay: &mut impl delay::DelayNs,
+        accel_scale: AccelFullScale,
+        gravity: ReferenceGravity,
+    ) -> Result<(Accel, Gyro, Option<Mag>), Error<I>> {
         collect_mean_values(self, delay, accel_scale, gravity).await
     }
 
@@ -272,12 +299,23 @@ where
     ///
     /// When the loop is done the offsets can be collected and hardcoded in the initialization
     /// of the application that will use this device with exactly these settings.
+    #[cfg(not(feature = "mpu9265"))]
     pub async fn calibration_loop(
         &mut self,
         delay: &mut impl delay::DelayNs,
         parameters: &CalibrationParameters,
         actions: CalibrationActions,
     ) -> Result<(CalibrationActions, Accel, Gyro), Error<I>> {
+        calibration_loop(self, delay, parameters, actions).await
+    }
+
+    #[cfg(feature = "mpu9265")]
+    pub async fn calibration_loop(
+        &mut self,
+        delay: &mut impl delay::DelayNs,
+        parameters: &CalibrationParameters,
+        actions: CalibrationActions,
+    ) -> Result<(CalibrationActions, Accel, Gyro, Option<Mag>), Error<I>> {
         calibration_loop(self, delay, parameters, actions).await
     }
 
@@ -486,6 +524,166 @@ where
         let mut data = [0; 2];
         self.read_registers(Register::TempOut_H, &mut data).await?;
         Ok(Temperature::from_bytes(data))
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Initialize the AK8963 magnetometer
+    pub async fn init_mag(&mut self) -> Result<(), Error<I>> {
+        // Enable I2C master mode
+        let mut value = self.read_register(Register::UserCtrl).await?;
+        value |= 1 << 5;
+        self.write_register(Register::UserCtrl, value).await?;
+
+        // Configure I2C master
+        self.write_register(Register::I2CMasterCtrl, 0x0D).await?; // 400kHz I2C clock
+
+        // Read sensitivity adjustment values and store them
+        let (asa_x, asa_y, asa_z) = self.read_mag_sensitivity().await?;
+        let sx = ((asa_x as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+        let sy = ((asa_y as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+        let sz = ((asa_z as f32 - 128.0) * 0.5 / 128.0 + 1.0) as f32;
+
+        // Configure magnetometer for continuous measurement mode with 16-bit output
+        let config = MagMode::Continuous2 as u8 | (MagBitMode::Bit16 as u8) << 4;
+        self.write_mag_register(MagRegister::Control1, config)
+            .await?;
+
+        // Initialize calibration with sensitivity adjustments but no offsets
+        self.mag_calibration = Some(crate::sensor_mpu9265::MagCalibration {
+            offsets: (0, 0, 0),
+            sensitivity: (sx, sy, sz),
+        });
+
+        Ok(())
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Read magnetometer sensitivity adjustment values from Fuse ROM
+    async fn read_mag_sensitivity(&mut self) -> Result<(u8, u8, u8), Error<I>> {
+        // Enter Fuse ROM access mode
+        self.write_mag_register(MagRegister::Control1, MagMode::FuseROM as u8)
+            .await?;
+
+        // Read sensitivity adjustment values
+        let asa_x = self.read_mag_register(MagRegister::ASAX).await?;
+        let asa_y = self.read_mag_register(MagRegister::ASAY).await?;
+        let asa_z = self.read_mag_register(MagRegister::ASAZ).await?;
+
+        Ok((asa_x, asa_y, asa_z))
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Read magnetometer measurements with calibration applied if available
+    pub async fn mag(&mut self) -> Result<Mag, Error<I>> {
+        let mut data = [0; 6];
+
+        // Wait for data ready
+        loop {
+            let status = self.read_mag_register(MagRegister::Status1).await?;
+            if status & 0x01 != 0 {
+                break;
+            }
+        }
+
+        // Read magnetometer data
+        self.read_mag_registers(MagRegister::MeasurementXL, &mut data)
+            .await?;
+
+        // Check for overflow
+        let status2 = self.read_mag_register(MagRegister::Status2).await?;
+        if status2 & 0x08 != 0 {
+            return Err(Error::MagOverflow);
+        }
+
+        // Convert to 16-bit values
+        let x = i16::from_le_bytes([data[0], data[1]]);
+        let y = i16::from_le_bytes([data[2], data[3]]);
+        let z = i16::from_le_bytes([data[4], data[5]]);
+
+        // Apply calibration if available
+        if let Some(cal) = &self.mag_calibration {
+            let mx = (x as f32 * cal.sensitivity.0) as i16 - cal.offsets.0;
+            let my = (y as f32 * cal.sensitivity.1) as i16 - cal.offsets.1;
+            let mz = (z as f32 * cal.sensitivity.2) as i16 - cal.offsets.2;
+            Ok(Mag::new(mx, my, mz))
+        } else {
+            Ok(Mag::new(x, y, z))
+        }
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Read from magnetometer register
+    async fn read_mag_register(&mut self, reg: MagRegister) -> Result<u8, Error<I>> {
+        // Set slave 0 to read from magnetometer register
+        self.write_register(Register::I2CSlave0Addr, MAG_ADDR | 0x80)
+            .await?;
+        self.write_register(Register::I2CSlave0Reg, reg as u8)
+            .await?;
+        self.write_register(Register::I2CSlave0Ctrl, 0x81).await?; // Enable read, 1 byte
+
+        // Wait for transfer to complete
+        loop {
+            let status = self.read_register(Register::I2CMasterStatus).await?;
+            if status & 0x01 == 0 {
+                break;
+            }
+        }
+
+        // Read the data
+        self.read_register(Register::I2CSlave0DI).await
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Write to magnetometer register
+    async fn write_mag_register(&mut self, reg: MagRegister, value: u8) -> Result<(), Error<I>> {
+        // Set slave 0 to write to magnetometer register
+        self.write_register(Register::I2CSlave0Addr, MAG_ADDR)
+            .await?;
+        self.write_register(Register::I2CSlave0Reg, reg as u8)
+            .await?;
+        self.write_register(Register::I2CSlave0DO, value).await?;
+        self.write_register(Register::I2CSlave0Ctrl, 0x81).await?; // Enable write, 1 byte
+
+        // Wait for transfer to complete
+        loop {
+            let status = self.read_register(Register::I2CMasterStatus).await?;
+            if status & 0x01 == 0 {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Read multiple magnetometer registers
+    async fn read_mag_registers(
+        &mut self,
+        reg: MagRegister,
+        data: &mut [u8],
+    ) -> Result<(), Error<I>> {
+        // Set slave 0 to read from magnetometer registers
+        self.write_register(Register::I2CSlave0Addr, MAG_ADDR | 0x80)
+            .await?;
+        self.write_register(Register::I2CSlave0Reg, reg as u8)
+            .await?;
+        self.write_register(Register::I2CSlave0Ctrl, 0x80 | data.len() as u8)
+            .await?;
+
+        // Wait for transfer to complete
+        loop {
+            let status = self.read_register(Register::I2CMasterStatus).await?;
+            if status & 0x01 == 0 {
+                break;
+            }
+        }
+
+        // Read the data
+        for byte in data.iter_mut() {
+            *byte = self.read_register(Register::I2CSlave0DI).await?;
+        }
+
+        Ok(())
     }
 
     /// Configure motion detection parameters.

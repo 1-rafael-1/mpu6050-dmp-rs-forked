@@ -6,6 +6,8 @@
 //! - Compensates for gravity's effect on accelerometer
 //! - Stores calibration in sensor registers
 
+#[cfg(feature = "mpu9265")]
+use crate::mag::Mag;
 use crate::{
     accel::{Accel, AccelFullScale},
     gyro::{Gyro, GyroFullScale},
@@ -70,6 +72,14 @@ impl CalibrationThreshold {
         self.is_value_within(gyro.x())
             && self.is_value_within(gyro.y())
             && self.is_value_within(gyro.z())
+    }
+
+    /// Check if the given magnetometer vector is within the threshold (MPU9265 only)
+    #[cfg(feature = "mpu9265")]
+    pub fn is_mag_within(self, mag: &Mag) -> bool {
+        self.is_value_within(mag.x())
+            && self.is_value_within(mag.y())
+            && self.is_value_within(mag.z())
     }
 
     /// If the current computed mean value is not acceptable, compute the next likely
@@ -148,6 +158,10 @@ impl ReferenceGravity {
 /// Each bit represents one axis:
 /// - Bits 0-2: Accelerometer (X,Y,Z)
 /// - Bits 3-5: Gyroscope (X,Y,Z)
+#[cfg_attr(
+    feature = "mpu9265",
+    doc = "- Bits 5-7: Magnetometer (X,Y,Z) (MPU9265 only)"
+)]
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
 pub struct CalibrationActions {
@@ -161,6 +175,12 @@ impl CalibrationActions {
     const GYRO_X: u8 = 1 << 3;
     const GYRO_Y: u8 = 1 << 4;
     const GYRO_Z: u8 = 1 << 5;
+    #[cfg(feature = "mpu9265")]
+    const MAG_X: u8 = 1 << 5;
+    #[cfg(feature = "mpu9265")]
+    const MAG_Y: u8 = 1 << 6;
+    #[cfg(feature = "mpu9265")]
+    const MAG_Z: u8 = 1 << 7;
 
     /// Build an empty bit set
     pub fn empty() -> Self {
@@ -169,7 +189,13 @@ impl CalibrationActions {
 
     /// Build a full bit set
     pub fn all() -> Self {
-        Self { flags: 0x3f }
+        Self {
+            flags: if cfg!(feature = "mpu9265") {
+                0xff // Include magnetometer bits
+            } else {
+                0x3f // Only accel and gyro bits
+            },
+        }
     }
 
     /// Check if we have nothing more to calibrate
@@ -200,6 +226,24 @@ impl CalibrationActions {
     /// Check if gyro z axis calibration is required
     pub fn gyro_z(self) -> bool {
         self.flags & Self::GYRO_Z != 0
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Check if magnetometer x axis calibration is required
+    pub fn mag_x(self) -> bool {
+        self.flags & Self::MAG_X != 0
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Check if magnetometer y axis calibration is required
+    pub fn mag_y(self) -> bool {
+        self.flags & Self::MAG_Y != 0
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Check if magnetometer z axis calibration is required
+    pub fn mag_z(self) -> bool {
+        self.flags & Self::MAG_Z != 0
     }
 
     /// Set the given flag
@@ -237,6 +281,24 @@ impl CalibrationActions {
     pub fn with_gyro_z(self, value: bool) -> Self {
         self.with_flag(value, Self::GYRO_Z)
     }
+
+    #[cfg(feature = "mpu9265")]
+    /// Set magnetometer x flag
+    pub fn with_mag_x(self, value: bool) -> Self {
+        self.with_flag(value, Self::MAG_X)
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Set magnetometer y flag
+    pub fn with_mag_y(self, value: bool) -> Self {
+        self.with_flag(value, Self::MAG_Y)
+    }
+
+    #[cfg(feature = "mpu9265")]
+    /// Set magnetometer z flag
+    pub fn with_mag_z(self, value: bool) -> Self {
+        self.with_flag(value, Self::MAG_Z)
+    }
 }
 
 /// Configuration for the calibration process.
@@ -246,6 +308,7 @@ impl CalibrationActions {
 /// - Acceptable error thresholds
 /// - Number of samples to take
 /// - Gravity compensation direction
+#[cfg_attr(feature = "mpu9265", doc = "- Magnetometer calibration threshold")]
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
 pub struct CalibrationParameters {
@@ -263,6 +326,9 @@ pub struct CalibrationParameters {
     pub iterations: usize,
     /// Reference gravity (will be subtracted from acceleration readings)
     pub gravity: ReferenceGravity,
+    /// Magnetometer threshold value (MPU9265 only)
+    #[cfg(feature = "mpu9265")]
+    pub mag_threshold: CalibrationThreshold,
 }
 
 impl CalibrationParameters {
@@ -281,6 +347,8 @@ impl CalibrationParameters {
             warmup_iterations: WARMUP_ITERATIONS,
             iterations: ITERATIONS,
             gravity,
+            #[cfg(feature = "mpu9265")]
+            mag_threshold: CalibrationThreshold { value: 10 }, // Default magnetometer threshold
         }
     }
 
@@ -316,6 +384,16 @@ impl CalibrationParameters {
     pub fn with_iterations(self, iterations: usize) -> Self {
         Self { iterations, ..self }
     }
+
+    /// Change magnetometer threshold (MPU9265 only)
+    /// (consumes and returns `Self` to be callable in a "builder-like" pattern)
+    #[cfg(feature = "mpu9265")]
+    pub fn with_mag_threshold(self, threshold: i16) -> Self {
+        Self {
+            mag_threshold: CalibrationThreshold { value: threshold },
+            ..self
+        }
+    }
 }
 
 /// Accumulates sensor readings during calibration.
@@ -332,6 +410,12 @@ pub struct MeanAccumulator {
     pub gx: i32,
     pub gy: i32,
     pub gz: i32,
+    #[cfg(feature = "mpu9265")]
+    pub mx: i32,
+    #[cfg(feature = "mpu9265")]
+    pub my: i32,
+    #[cfg(feature = "mpu9265")]
+    pub mz: i32,
     pub gravity_compensation: Accel,
 }
 
@@ -346,11 +430,18 @@ impl MeanAccumulator {
             gx: 0,
             gy: 0,
             gz: 0,
+            #[cfg(feature = "mpu9265")]
+            mx: 0,
+            #[cfg(feature = "mpu9265")]
+            my: 0,
+            #[cfg(feature = "mpu9265")]
+            mz: 0,
             gravity_compensation: gravity.gravity_compensation(accel_scale),
         }
     }
 
     /// Adds a new sample (subtracting the reference gravity)
+    #[cfg(not(feature = "mpu9265"))]
     pub fn add(&mut self, accel: &Accel, gyro: &Gyro) {
         self.ax += (accel.x() as i32) - (self.gravity_compensation.x() as i32);
         self.ay += (accel.y() as i32) - (self.gravity_compensation.y() as i32);
@@ -360,7 +451,26 @@ impl MeanAccumulator {
         self.gz += gyro.z() as i32;
     }
 
+    /// Adds a new sample (subtracting the reference gravity)
+    #[cfg(feature = "mpu9265")]
+    pub fn add(&mut self, accel: &Accel, gyro: &Gyro, mag: Option<&Mag>) {
+        self.ax += (accel.x() as i32) - (self.gravity_compensation.x() as i32);
+        self.ay += (accel.y() as i32) - (self.gravity_compensation.y() as i32);
+        self.az += (accel.z() as i32) - (self.gravity_compensation.z() as i32);
+        self.gx += gyro.x() as i32;
+        self.gy += gyro.y() as i32;
+        self.gz += gyro.z() as i32;
+
+        // Add magnetometer readings if available
+        if let Some(mag) = mag {
+            self.mx += mag.x() as i32;
+            self.my += mag.y() as i32;
+            self.mz += mag.z() as i32;
+        }
+    }
+
     /// Compute average values (consumes `self` because the computation is done)
+    #[cfg(not(feature = "mpu9265"))]
     pub fn means(mut self) -> (Accel, Gyro) {
         self.ax /= ITERATIONS as i32;
         self.ay /= ITERATIONS as i32;
@@ -368,9 +478,37 @@ impl MeanAccumulator {
         self.gx /= ITERATIONS as i32;
         self.gy /= ITERATIONS as i32;
         self.gz /= ITERATIONS as i32;
+
         (
             Accel::new(self.ax as i16, self.ay as i16, self.az as i16),
             Gyro::new(self.gx as i16, self.gy as i16, self.gz as i16),
+        )
+    }
+
+    /// Compute average values (consumes `self` because the computation is done)
+    #[cfg(feature = "mpu9265")]
+    pub fn means(mut self) -> (Accel, Gyro, Option<Mag>) {
+        self.ax /= ITERATIONS as i32;
+        self.ay /= ITERATIONS as i32;
+        self.az /= ITERATIONS as i32;
+        self.gx /= ITERATIONS as i32;
+        self.gy /= ITERATIONS as i32;
+        self.gz /= ITERATIONS as i32;
+
+        // Only include magnetometer means if they were accumulated
+        let mag = if self.mx != 0 || self.my != 0 || self.mz != 0 {
+            self.mx /= ITERATIONS as i32;
+            self.my /= ITERATIONS as i32;
+            self.mz /= ITERATIONS as i32;
+            Some(Mag::new(self.mx as i16, self.my as i16, self.mz as i16))
+        } else {
+            None
+        };
+
+        (
+            Accel::new(self.ax as i16, self.ay as i16, self.az as i16),
+            Gyro::new(self.gx as i16, self.gy as i16, self.gz as i16),
+            mag,
         )
     }
 }
@@ -384,60 +522,130 @@ mod tests {
 
     use super::{MeanAccumulator, ReferenceGravity};
 
-    #[test]
-    fn test_mean_accumulator_with_compensation() {
-        // Case #1: attempt to subtract with overflow
-        {
-            let accel = Accel {
-                x: -1180,
-                y: -32768,
-                z: 32767,
-            };
-            let gyro = Gyro {
-                x: -3,
-                y: -7,
-                z: -10,
-            };
+    #[cfg(not(feature = "mpu9265"))]
+    mod base_tests {
+        use super::*;
 
-            let mut mean_acc = MeanAccumulator::new(AccelFullScale::G2, ReferenceGravity::ZN);
-            mean_acc.add(&accel, &gyro);
+        #[test]
+        fn test_mean_accumulator_with_compensation() {
+            // Case #1: attempt to subtract with overflow
+            {
+                let accel = Accel {
+                    x: -1180,
+                    y: -32768,
+                    z: 32767,
+                };
+                let gyro = Gyro {
+                    x: -3,
+                    y: -7,
+                    z: -10,
+                };
 
-            // This test verifies that extreme accelerometer values (32767) don't overflow
-            // when combined with gravity compensation (-16384). The calculation must be
-            // done in i32 to get the correct result of 49151.
-            assert_eq!(mean_acc.az, 49151);
+                let mut mean_acc = MeanAccumulator::new(AccelFullScale::G2, ReferenceGravity::ZN);
+                mean_acc.add(&accel, &gyro);
+
+                // This test verifies that extreme accelerometer values (32767) don't overflow
+                // when combined with gravity compensation (-16384). The calculation must be
+                // done in i32 to get the correct result of 49151.
+                assert_eq!(mean_acc.az, 49151);
+            }
+        }
+
+        #[test]
+        fn test_mean_accumulator_with_compensation_negate_panic() {
+            // Case #2: attempt to subtract with overflow
+            {
+                let mut mean_acc = MeanAccumulator {
+                    ax: -700924,
+                    ay: -6520832,
+                    az: 3260217,
+                    gx: -3345,
+                    gy: 770,
+                    gz: -7648,
+                    gravity_compensation: Accel {
+                        x: 0,
+                        y: 0,
+                        z: -16384,
+                    },
+                };
+                let accel = Accel {
+                    x: -3536,
+                    y: -32768,
+                    z: 32767,
+                };
+                let gyro = Gyro {
+                    x: -105,
+                    y: 100,
+                    z: -36,
+                };
+
+                mean_acc.add(&accel, &gyro);
+            }
         }
     }
 
-    #[test]
-    fn test_mean_accumulator_with_compensation_negate_panic() {
-        // Case #2: attempt to subtract with overflow
-        {
-            let mut mean_acc = MeanAccumulator {
-                ax: -700924,
-                ay: -6520832,
-                az: 3260217,
-                gx: -3345,
-                gy: 770,
-                gz: -7648,
-                gravity_compensation: Accel {
-                    x: 0,
-                    y: 0,
-                    z: -16384,
-                },
-            };
-            let accel = Accel {
-                x: -3536,
-                y: -32768,
-                z: 32767,
-            };
-            let gyro = Gyro {
-                x: -105,
-                y: 100,
-                z: -36,
-            };
+    #[cfg(feature = "mpu9265")]
+    mod mpu9265_tests {
+        use super::*;
 
-            mean_acc.add(&accel, &gyro);
+        #[test]
+        fn test_mean_accumulator_with_compensation() {
+            // Case #1: attempt to subtract with overflow
+            {
+                let accel = Accel {
+                    x: -1180,
+                    y: -32768,
+                    z: 32767,
+                };
+                let gyro = Gyro {
+                    x: -3,
+                    y: -7,
+                    z: -10,
+                };
+
+                let mut mean_acc = MeanAccumulator::new(AccelFullScale::G2, ReferenceGravity::ZN);
+                mean_acc.add(&accel, &gyro, None);
+
+                // This test verifies that extreme accelerometer values (32767) don't overflow
+                // when combined with gravity compensation (-16384). The calculation must be
+                // done in i32 to get the correct result of 49151.
+                assert_eq!(mean_acc.az, 49151);
+            }
+        }
+
+        #[test]
+        fn test_mean_accumulator_with_compensation_negate_panic() {
+            // Case #2: attempt to subtract with overflow
+            {
+                let mut mean_acc = MeanAccumulator {
+                    ax: -700924,
+                    ay: -6520832,
+                    az: 3260217,
+                    gx: -3345,
+                    gy: 770,
+                    gz: -7648,
+                    mx: 0,
+                    my: 0,
+                    mz: 0,
+                    gravity_compensation: Accel {
+                        x: 0,
+                        y: 0,
+                        z: -16384,
+                    },
+                };
+                let accel = Accel {
+                    x: -3536,
+                    y: -32768,
+                    z: 32767,
+                };
+                let gyro = Gyro {
+                    x: -105,
+                    y: 100,
+                    z: -36,
+                };
+
+                mean_acc.add(&accel, &gyro, None);
+            }
         }
     }
 }

@@ -24,17 +24,12 @@ name = "motion_detection"
 path = "src/motion_detection.rs"
 
 [dependencies]
-mpu6050-dmp = { path = "..", features = ["async", "defmt-03"] }
-num-traits = { version = "0.2", default-features = false }
-libm = "0.2.1"
-
-[patch.crates-io]
-embassy-rp = { git = "https://github.com/embassy-rs/embassy" }embassy-rp = { git = "https://github.com/embassy-rs/embassy", features = [
-"defmt",
-"unstable-pac",
-"time-driver",
-"critical-section-impl",
-"rp235xa",
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", features = [
+    "defmt",
+    "unstable-pac",
+    "time-driver",
+    "critical-section-impl",
+    "rp235xa",
 ] }
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", features = [
     "defmt",
@@ -59,6 +54,12 @@ defmt-rtt = "0.4"
 cortex-m-rt = "0.7.5"
 critical-section = "1.2.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
+mpu6050-dmp = { path = "..", features = ["async", "defmt-03", "mpu9265"] }
+num-traits = { version = "0.2", default-features = false }
+libm = "0.2.1"
+
+[patch.crates-io]
+embassy-rp = { git = "https://github.com/embassy-rs/embassy" }
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy" }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
 embassy-executor = { git = "https://github.com/embassy-rs/embassy" }
